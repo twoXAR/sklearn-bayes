@@ -9,6 +9,7 @@ from sklearn.utils import check_X_y
 from scipy.linalg import solve_triangular
 from sklearn.linear_model.logistic import ( _logistic_loss_and_grad, _logistic_loss, 
                                             _logistic_grad_hess,)
+import scipy.sparse as sparse
 
 
 
@@ -41,7 +42,7 @@ class BayesianLogisticRegression(LinearClassifierMixin, BaseEstimator):
            self
         '''
         # preprocess data
-        X,y = check_X_y( X, y , dtype = np.float64)
+        X,y = check_X_y( X, y , dtype = np.float64, accept_sparse='csr')
         check_classification_targets(y)
         self.classes_ = np.unique(y)
         n_classes = len(self.classes_)
@@ -212,7 +213,7 @@ class EBLogisticRegression(BayesianLogisticRegression):
         w0 = np.zeros(n_features)
         
         for i in range(self.n_iter):
-            
+            print "{0} iteration".format(str(i))
             alpha0 = alpha
             
             # find mean & covariance of Laplace approximation to posterior
@@ -242,7 +243,8 @@ class EBLogisticRegression(BayesianLogisticRegression):
         Adds intercept to data (intercept column is not used in lbfgs_b or newton_cg
         it is used only in Hessian)
         '''
-        return np.hstack((X,np.ones([X.shape[0],1])))
+        
+        return sparse.hstack((X,np.ones([X.shape[0],1])), format='csr')
         
     
     def _get_intercept(self,coef):
@@ -254,8 +256,7 @@ class EBLogisticRegression(BayesianLogisticRegression):
         
     def _get_sigma(self,X):
         ''' Compute variance of predictive distribution'''
-        return np.asarray([ np.sum(X**2*s,axis = 1) for s in self.sigma_])
-    
+        return np.asarray([np.squeeze(np.asarray([X.power(2).multiply(s).sum(axis=1) for s in self.sigma_]))]) 
             
     def _posterior(self, X, Y, alpha0, w0):
         '''
@@ -278,15 +279,15 @@ class EBLogisticRegression(BayesianLogisticRegression):
             raise NotImplementedError('Liblinear solver is not yet implemented')
             
         # calculate negative of Hessian at w
-        xw    = np.dot(X,w)
+        xw    = X.dot(w)
         s     = expit(xw)
         R     = s * (1 - s)
-        Hess  = np.dot(X.T*R,X)    
+        Hess  = X.T.multiply(R).dot(X).toarray()   
         Alpha = np.ones(n_features)*alpha0
         if self.fit_intercept:
             Alpha[-1] = np.finfo(np.float16).eps
         np.fill_diagonal(Hess, np.diag(Hess) + Alpha)
-        e  =  eigvalsh(Hess)        
+        e  =  eigvalsh(Hess)      
         return w,1./e
 
 
@@ -359,7 +360,7 @@ class VBLogisticRegression(BayesianLogisticRegression):
         '''
         eps = 1
         n_samples, n_features = X.shape
-        XY  = np.dot( X.T , (y-0.5))
+        XY  = X.transpose().dot(y-0.5)
         w0  = np.zeros(n_features)
         
         # hyperparameters of q(alpha) (approximate distribution of precision
@@ -368,6 +369,7 @@ class VBLogisticRegression(BayesianLogisticRegression):
         b  = self.b
   
         for i in range(self.n_iter):
+            print "{0} iteration".format(str(i))
             # In the E-step we update approximation of 
             # posterior distribution q(w,alpha) = q(w)*q(alpha)
             
@@ -384,9 +386,9 @@ class VBLogisticRegression(BayesianLogisticRegression):
             # -------- update eps  ------------
             # In the M-step we update parameter eps which controls 
             # accuracy of local variational approximation to lower bound
-            XMX = np.dot(X,w)**2
-            XSX = np.sum( np.dot(X,Ri.T)**2, axis = 1)
-            eps = np.sqrt( XMX + XSX )
+            XMX = X.dot(w)**2
+            XSX = np.sum(X.dot(Ri.T)**2, axis=1)
+            eps = np.sqrt(XMX+XSX)
             
             # convergence
             if np.sum(abs(w-w0) > self.tol) == 0 or i==self.n_iter-1:
@@ -400,7 +402,7 @@ class VBLogisticRegression(BayesianLogisticRegression):
 
     def _add_intercept(self,X):
         '''Adds intercept to data matrix'''
-        return np.hstack((np.ones([X.shape[0],1]),X))
+        return sparse.hstack((X,np.ones([X.shape[0],1])), format='csr')
         
     
     def _get_intercept(self, coef):
@@ -410,7 +412,7 @@ class VBLogisticRegression(BayesianLogisticRegression):
         
     def _get_sigma(self,X):
         ''' Compute variance of predictive distribution'''
-        return np.asarray([np.sum(np.dot(X,s)*X,axis = 1) for s in self.sigma_])
+        return np.asarray([np.squeeze(np.asarray([X.multiply(X.dot(s)).sum(axis=1) for s in self.sigma_]))]) 
 
 
     def _posterior_dist(self,X,l,a,b,XY,full_covar = False):
@@ -418,7 +420,7 @@ class VBLogisticRegression(BayesianLogisticRegression):
         Finds gaussian approximation to posterior of coefficients using
         local variational approximation of Jaakola & Jordan
         '''
-        sigma_inv  = 2*np.dot(X.T*l,X)
+        sigma_inv  = 2*X.T.multiply(l).dot(X).toarray()
         alpha_vec  = np.ones(X.shape[1])*float(a) / b
         if self.fit_intercept:
             alpha_vec[0] = np.finfo(np.float16).eps
